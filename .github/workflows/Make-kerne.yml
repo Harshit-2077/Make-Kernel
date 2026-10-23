@@ -72,21 +72,59 @@ jobs:
 
       - name: Install build dependencies + clang ${{ env.CLANG_VERSION }}
         run: |
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
-          echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-$CLANG_VERSION main" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update -o Acquire::Languages=none
           sudo apt-get install -y --no-install-recommends \
-            bc bison flex build-essential libssl-dev libelf-dev dwarves cpio lz4 zstd \
-            kmod rsync python3 ccache git patch \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            clang-"$CLANG_VERSION" lld-"$CLANG_VERSION" llvm-"$CLANG_VERSION"
-          echo "/usr/lib/llvm-$CLANG_VERSION/bin" >> "$GITHUB_PATH"
+            bc bison flex build-essential libssl-dev libelf-dev dwarves \
+            cpio lz4 zstd kmod rsync python3 ccache git patch curl \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
+      - name: Install AOSP clang ${{ env.CLANG_VERSION }}
+        run: |
+          # AOSP prebuilt LLVM bundles. r536225 = clang 19.0.1,
+          # r522817 = clang 18.0.0 (fallback if you ever switch the input).
+          case "$CLANG_VERSION" in
+            19) AOSP_CLANG=clang-r536225 ;;
+            18) AOSP_CLANG=clang-r522817 ;;
+            *)
+              echo "::error::No AOSP prebuilt mapped for clang $CLANG_VERSION"
+              exit 1
+              ;;
+          esac
+          echo "AOSP_CLANG=$AOSP_CLANG" >> "$GITHUB_ENV"
+
+          mkdir -p "$WORK/toolchain"
+          cd "$WORK/toolchain"
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${AOSP_CLANG}.tar.gz"
+          echo "Fetching $URL"
+          curl -fL --retry 3 --retry-delay 5 -o clang.tar.gz "$URL"
+          ls -lh clang.tar.gz
+
+          mkdir -p "$AOSP_CLANG"
+          tar -xzf clang.tar.gz -C "$AOSP_CLANG"
+          rm -f clang.tar.gz
+
+          test -x "$AOSP_CLANG/bin/clang" || { echo "::error::AOSP clang binary missing"; exit 1; }
+
+          echo "$WORK/toolchain/$AOSP_CLANG/bin" >> "$GITHUB_PATH"
+          
       - name: Show toolchain
         run: |
+          which clang
           clang --version
           ld.lld --version
           llvm-nm --version
+          llvm-strip --version
+
+          # Guard against the distro clang sneaking back in via PATH
+          if ! clang --version | grep -q "Android"; then
+            echo "::error::clang is not the AOSP prebuilt (missing 'Android' in version string)"
+            exit 1
+          fi
+          # And confirm major version matches the input
+          CLANG_MAJOR="$(clang --version | sed -n 's/.*clang version \([0-9]\+\)\..*/\1/p' | head -1)"
+          echo "clang major: $CLANG_MAJOR (expected $CLANG_VERSION)"
+          [[ "$CLANG_MAJOR" == "$CLANG_VERSION" ]] || \
+            { echo "::error::clang major != CLANG_VERSION"; exit 1; }
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -180,6 +218,12 @@ jobs:
           ./scripts/config --file out/.config \
             -e MODULES \
             -d MODULE_SIG -d MODULE_SIG_ALL -d MODULE_SIG_FORCE -d MODULE_SIG_PROTECT \
+            -d LTO_NONE \
+            -d LTO_CLANG_FULL \
+            -e LTO \
+            -e LTO_CLANG \
+            -e LTO_CLANG_THIN \
+            -e CFI_CLANG \
             --set-str MODULE_SIG_KEY "" \
             --set-str SYSTEM_TRUSTED_KEYS "" \
             --set-str SYSTEM_REVOCATION_KEYS ""
