@@ -106,8 +106,6 @@ jobs:
       - name: Show toolchain
         run: |
           clang --version
-          ld.lld --version
-          llvm-nm --version
 
           CLANG_PATH="$(command -v clang)"
           case "$CLANG_PATH" in
