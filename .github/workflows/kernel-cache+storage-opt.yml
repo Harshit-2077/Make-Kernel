@@ -116,10 +116,8 @@ jobs:
       - name: Show toolchain
         run: |
           clang --version
-          ld.lld --version
-          llvm-nm --version
           command -v clang ld.lld llvm-nm llvm-strip llvm-ar
-
+           
           # The real guard: clang must resolve *inside* the Neutron toolchain
           # we just unpacked, not the distro one from /usr/bin or /usr/lib/llvm-*.
           CLANG_PATH="$(command -v clang)"
