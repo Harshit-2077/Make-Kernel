@@ -11,25 +11,28 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Install Dependencies & Tools
         run: |
           sudo apt-get update
-          # Install tree for directory structures, erofs-utils for DLKM extraction, 
-          # and libsparse-utils in case the images are sparse images.
-          sudo apt-get install -y tree erofs-utils android-sdk-libsparse-utils python3-pip unzip
-          pip install avbtool
-
-      - name: Setup Magiskboot
-        run: |
-          # Download the official Magisk APK and extract the x86_64 magiskboot binary
+          # Install required packages
+          sudo apt-get install -y tree erofs-utils android-sdk-libsparse-utils wget unzip python3
+          
+          echo "Installing avbtool from AOSP..."
+          # Download avbtool directly from AOSP since it's not on PyPI
+          wget -q https://android.googlesource.com/platform/external/avb/+archive/refs/heads/android10-dev.tar.gz -O - | tar xzf - avbtool
+          chmod +x avbtool
+          sudo mv avbtool /usr/local/bin/avbtool
+          
           echo "Downloading Magiskboot..."
+          # Download the official Magisk APK and extract the x86_64 magiskboot binary
           wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O magisk.apk
           unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d ./
           mv libmagiskboot.so magiskboot
           chmod +x magiskboot
           sudo mv magiskboot /usr/local/bin/
           rm magisk.apk
-          echo "Magiskboot installed successfully."
+          
+          echo "All tools installed successfully."
 
       - name: Process Boot Images
         run: |
@@ -37,9 +40,8 @@ jobs:
           cd workspace/boot_output
 
           echo "=== Unpacking boot.img ==="
-          # Note: If the image doesn't have a ramdisk, this might throw an error. We use || true to prevent failure.
+          # Use || true to prevent failure if the image lacks a ramdisk
           magiskboot unpack ../../lineage/boot.img > magiskboot_boot_stdout.txt 2>&1 || true
-          mv kernel kernel_boot 2>/dev/null || true
           
           echo "=== Unpacking vendor_boot.img ==="
           # Unpack to a specific directory to get the tree structure requested
@@ -91,7 +93,6 @@ jobs:
       - name: Prepare Artifacts & Clean Up
         run: |
           cd workspace
-          # Combine AVB and Magiskboot outputs into single summary files for easy reading
           echo "All extraction and logs finished. Ready for upload."
 
       - name: Upload Extracted Artifacts
