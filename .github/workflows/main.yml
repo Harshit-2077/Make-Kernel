@@ -1,0 +1,103 @@
+name: Extract Kernel Partitions & DLKM
+
+on:
+  workflow_dispatch: # Allows you to manually trigger the workflow from the Actions tab
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          # Install tree for directory structures, erofs-utils for DLKM extraction, 
+          # and libsparse-utils in case the images are sparse images.
+          sudo apt-get install -y tree erofs-utils android-sdk-libsparse-utils python3-pip unzip
+          pip install avbtool
+
+      - name: Setup Magiskboot
+        run: |
+          # Download the official Magisk APK and extract the x86_64 magiskboot binary
+          echo "Downloading Magiskboot..."
+          wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O magisk.apk
+          unzip -j magisk.apk "lib/x86_64/libmagiskboot.so" -d ./
+          mv libmagiskboot.so magiskboot
+          chmod +x magiskboot
+          sudo mv magiskboot /usr/local/bin/
+          rm magisk.apk
+          echo "Magiskboot installed successfully."
+
+      - name: Process Boot Images
+        run: |
+          mkdir -p workspace/boot_output
+          cd workspace/boot_output
+
+          echo "=== Unpacking boot.img ==="
+          # Note: If the image doesn't have a ramdisk, this might throw an error. We use || true to prevent failure.
+          magiskboot unpack ../../lineage/boot.img > magiskboot_boot_stdout.txt 2>&1 || true
+          mv kernel kernel_boot 2>/dev/null || true
+          
+          echo "=== Unpacking vendor_boot.img ==="
+          # Unpack to a specific directory to get the tree structure requested
+          mkdir -p ../../workspace/vendor_boot_unpacked
+          cd ../../workspace/vendor_boot_unpacked
+          magiskboot unpack ../../lineage/vendor_boot.img > magiskboot_vendor_boot_stdout.txt 2>&1 || true
+          
+          echo "=== Capturing Tree for vendor_boot ==="
+          tree -a > vendor_boot_tree.txt
+          
+          echo "=== Running avbtool on Boot Images ==="
+          cd ../../workspace/boot_output
+          avbtool info_image --image ../../lineage/boot.img > avbtool_boot.txt 2>&1 || true
+          avbtool info_image --image ../../lineage/vendor_boot.img > avbtool_vendor_boot.txt 2>&1 || true
+
+      - name: Extract DLKM Partitions (system_dlkm & vendor_dlkm)
+        run: |
+          mkdir -p workspace/dlkm_extracted
+          cd workspace/dlkm_extracted
+          
+          # Loop through both DLKM partitions
+          for part in system_dlkm vendor_dlkm; do
+            echo "==========================================="
+            echo "Processing $part.img"
+            echo "==========================================="
+            
+            # Convert sparse image to raw image just in case
+            simg2img "../../lineage/$part.img" "${part}_raw.img" 2>/dev/null || cp "../../lineage/$part.img" "${part}_raw.img"
+            
+            # Create directory and extract EROFS image
+            mkdir -p "$part"
+            echo "Extracting $part..."
+            fsck.erofs --extract="$part" "${part}_raw.img" > "${part}_extract_log.txt" 2>&1 || true
+            
+            echo "=== Running avbtool on $part ==="
+            avbtool info_image --image "../../lineage/$part.img" > "avbtool_${part}.txt" 2>&1 || true
+            
+            echo "=== Searching for modules.load and blocklist files in $part ==="
+            find "$part" -type f \( -name "modules.load*" -o -name "modules.blocklist" -o -name "modules.*.blocklist" \) > "${part}_found_files.txt"
+            cat "${part}_found_files.txt"
+            
+            echo "=== Capturing Tree for $part ==="
+            tree -a "$part" > "${part}_tree.txt"
+            
+            # Clean up raw file to save runner space
+            rm -f "${part}_raw.img"
+          done
+
+      - name: Prepare Artifacts & Clean Up
+        run: |
+          cd workspace
+          # Combine AVB and Magiskboot outputs into single summary files for easy reading
+          echo "All extraction and logs finished. Ready for upload."
+
+      - name: Upload Extracted Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-extraction-results
+          # This grabs everything we created in the workspace folder
+          path: workspace/
+          retention-days: 7
